@@ -1,0 +1,570 @@
+### 
+# do not apply this document without editing things! Look for EDIT:
+#
+# also, this configuration contains no TLS throughout the lifecycle of your
+# data. Be mindful of whom you share this CI system with.
+###
+---
+apiVersion: v1
+kind: Secret
+metadata:
+  name: tinyci-config
+type: Opaque
+stringData:
+  runner.yaml: |-
+    queue: "default"
+    namespace: "runs"
+    clients:
+      queuesvc: "queuesvc:6001"
+      assetsvc: "assetsvc:6002"
+      logsvc: "logsvc:6005"
+  hooksvc.yaml: |-
+    queue_service: 'queuesvc:6001'
+    data_service: 'datasvc:6000'
+    log_service: 'logsvc:6005'
+  config.yaml: |-
+    auth:
+      # EDIT: generate these keys with:
+      #
+      #   xxd -ps -l 32 /dev/urandom | perl -e 'undef $/; print join("", split(/\n/, <>))."\n";'
+      #
+      # key for session encryption -- bytes in hex format
+      session_crypt_key: 1234567123456712345671234567123456712345671234567888888812345678
+      # key for github token encryption -- bytes in hex format
+      token_crypt_key: 1234567123456712345671234567123456712345671234567888888812345678
+      # fixed_capabilities allow you to give some users automatic access (And keep it that way)
+      fixed_capabilities:
+        your_username: # EDIT: put your username here
+          - 'modify:user'
+          - 'modify:ci'
+          - 'submit'
+          - 'cancel'
+    oauth: # EDIT: oauth2 settings; create a oauth2 account on github that matches the following settings.
+      client_id: "<your client id>"
+      client_secret: "<your client secret>"
+      redirect_url: "http://<your host:port>/uisvc/login"
+    clients:
+      logsvc: 'logsvc:6005'
+      datasvc: 'datasvc:6000'
+      queuesvc: 'queuesvc:6001'
+      assetsvc: 'assetsvc:6002'
+      authsvc: 'authsvc:6004'
+      uisvc: 'http://uisvc:6010' # uisvc uses http, so urls.
+    services:
+      last_scanned_wait: 1h
+      logs_root_path: /var/tinyci/logs # default, will need to change if non-root or set perms beforehand
+    websockets:
+      insecure_websockets: true
+    db: 'host=postgres database=tinyci user=tinyci password=tinyci sslmode=disable'
+    hook_url: 'http://<your host:port>/hook' # EDIT:
+    url: 'http://<your host:port>' # EDIT:
+    log_requests: true
+---
+apiVersion: v1
+kind: Namespace
+metadata:
+  name: runs
+---
+apiVersion: rbac.authorization.k8s.io/v1
+kind: ClusterRole
+metadata:
+  name: run-jobs
+rules:
+- apiGroups: ["batch"]
+  resources: ["jobs"]
+  verbs: ["put", "get", "watch", "list"]
+---
+apiVersion: v1
+kind: ServiceAccount
+metadata:
+  name: k8s-runner
+automountServiceAccountToken: true
+---
+apiVersion: rbac.authorization.k8s.io/v1
+kind: ClusterRoleBinding
+metadata:
+  name: run-jobs-binding
+roleRef:
+  apiGroup: rbac.authorization.k8s.io
+  kind: ClusterRole
+  name: run-jobs
+subjects:
+- kind: ServiceAccount
+  namespace: default
+  name: k8s-runner
+---
+apiVersion: v1
+kind: Service
+metadata:
+  name: postgres
+  labels:
+    app: tinyci
+spec:
+  ports:
+  - port: 5432
+    name: postgres
+  clusterIP: None
+  selector:
+    app: tinyci
+---
+apiVersion: apps/v1
+kind: StatefulSet
+metadata:
+  name: tinyci-db
+spec:
+  selector:
+    matchLabels:
+      app: tinyci # has to match .spec.template.metadata.labels
+  serviceName: "tinyci-db"
+  replicas: 1 # by default is 1
+  template:
+    metadata:
+      labels:
+        app: tinyci # has to match .spec.selector.matchLabels
+    spec:
+      terminationGracePeriodSeconds: 10
+      containers:
+      - name: postgres
+        image: postgres:11
+        env:
+        - name: POSTGRES_PASSWORD
+          value: tinyci
+        - name: POSTGRES_DB
+          value: tinyci
+        - name: POSTGRES_USER
+          value: tinyci
+        ports:
+        - containerPort: 5432
+          name: postgres
+        volumeMounts:
+        - name: db
+          mountPath: /var/lib/postgres
+  volumeClaimTemplates:
+  - metadata:
+      name: db
+    spec:
+      accessModes: [ "ReadWriteOnce" ]
+      resources:
+        requests:
+          storage: 1Gi
+---
+apiVersion: batch/v1
+kind: Job
+metadata:
+  name: migrator
+  labels:
+    app: tinyci
+spec:
+  template:
+    spec:
+      containers:
+      - name: tinyci-migrator
+        image: tinyci/release:0.2.3
+        command: ["migrator", "-u", "tinyci", "-p", "tinyci", "-t", "postgres", "/usr/local/bin/migrations/tinyci"]
+      restartPolicy: Never
+---
+apiVersion: v1
+kind: Service
+metadata:
+  name: nginx
+  labels:
+    app: tinyci
+spec:
+  ports:
+  - port: 3000
+    targetPort: 80
+    name: www
+  externalIPs:
+    - 10.0.0.40
+  selector:
+    app: tinyci
+---
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: ui
+  labels:
+    app: tinyci
+spec:
+  selector:
+    matchLabels:
+      app: tinyci
+  replicas: 1
+  template:
+    metadata:
+      labels:
+        app: tinyci
+    spec:
+      terminationGracePeriodSeconds: 10
+      containers:
+      - name: tinyci-ui
+        image: tinyci/ui-nginx:latest
+        ports:
+        - containerPort: 80
+          name: www
+---
+apiVersion: v1
+kind: Service
+metadata:
+  name: logsvc
+  labels:
+    app: tinyci
+spec:
+  ports:
+  - port: 6005
+    name: logsvc
+  clusterIP: None
+  selector:
+    app: tinyci
+---
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: logsvc
+  labels:
+    app: tinyci
+spec:
+  replicas: 1
+  selector:
+    matchLabels:
+      app: tinyci
+  template:
+    metadata:
+      labels:
+        app: tinyci
+    spec:
+      terminationGracePeriodSeconds: 10
+      containers:
+      - name: logsvc
+        image: tinyci/release:0.2.3
+        ports:
+        - containerPort: 6005
+        command: [ "logsvc", "-c", "/etc/tinyci/config.yaml" ]
+        volumeMounts:
+        - name: config
+          mountPath: "/etc/tinyci"
+          readOnly: true
+      volumes:
+      - name: config
+        secret:
+          secretName: tinyci-config
+---
+apiVersion: v1
+kind: Service
+metadata:
+  name: datasvc
+  labels:
+    app: tinyci
+spec:
+  ports:
+  - port: 6000
+    name: datasvc
+  clusterIP: None
+  selector:
+    app: tinyci
+---
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: datasvc 
+  labels:
+    app: tinyci
+spec:
+  replicas: 1
+  selector:
+    matchLabels:
+      app: tinyci
+  template:
+    metadata:
+      labels:
+        app: tinyci
+    spec:
+      terminationGracePeriodSeconds: 10
+      containers:
+      - name: datasvc 
+        image: tinyci/release:0.2.3
+        ports:
+        - containerPort: 6000
+        command: [ "datasvc", "-c", "/etc/tinyci/config.yaml" ]
+        volumeMounts:
+        - name: config
+          mountPath: "/etc/tinyci"
+          readOnly: true
+      volumes:
+      - name: config
+        secret:
+          secretName: tinyci-config
+---
+apiVersion: v1
+kind: Service
+metadata:
+  name: assetsvc
+  labels:
+    app: tinyci
+spec:
+  ports:
+  - port: 6002
+    name: assetsvc
+  clusterIP: None
+  selector:
+    app: tinyci
+---
+apiVersion: apps/v1
+kind: StatefulSet
+metadata:
+  name: assetsvc
+  labels:
+    app: tinyci
+spec:
+  replicas: 1
+  selector:
+    matchLabels:
+      app: tinyci
+  serviceName: "tinyci-db"
+  replicas: 1 # by default is 1
+  template:
+    metadata:
+      labels:
+        app: tinyci
+    spec:
+      terminationGracePeriodSeconds: 10
+      containers:
+      - name: assetsvc
+        image: tinyci/release:0.2.3
+        ports:
+        - containerPort: 6002
+        command: [ "assetsvc", "-c", "/etc/tinyci/config.yaml" ]
+        volumeMounts:
+        - name: logs
+          mountPath: "/var/tinyci/logs"
+          readOnly: true
+        - name: config
+          mountPath: "/etc/tinyci"
+          readOnly: true
+      volumes:
+      - name: config
+        secret:
+          secretName: tinyci-config
+  volumeClaimTemplates:
+  - metadata:
+      name: logs
+    spec:
+      accessModes: [ "ReadWriteOnce" ]
+      resources:
+        requests:
+          storage: 1Gi
+---
+apiVersion: v1
+kind: Service
+metadata:
+  name: queuesvc
+  labels:
+    app: tinyci
+spec:
+  ports:
+  - port: 6001
+    name: queuesvc
+  clusterIP: None
+  selector:
+    app: tinyci
+---
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: queuesvc
+  labels:
+    app: tinyci
+spec:
+  replicas: 1
+  selector:
+    matchLabels:
+      app: tinyci
+  template:
+    metadata:
+      labels:
+        app: tinyci
+    spec:
+      terminationGracePeriodSeconds: 10
+      containers:
+      - name: queuesvc
+        image: tinyci/release:0.2.3
+        ports:
+        - containerPort: 6004
+        command: [ "queuesvc", "-c", "/etc/tinyci/config.yaml" ]
+        volumeMounts:
+        - name: config
+          mountPath: "/etc/tinyci"
+          readOnly: true
+      volumes:
+      - name: config
+        secret:
+          secretName: tinyci-config
+---
+apiVersion: v1
+kind: Service
+metadata:
+  name: authsvc
+  labels:
+    app: tinyci
+spec:
+  ports:
+  - port: 6002
+    name: authsvc
+  clusterIP: None
+  selector:
+    app: tinyci
+---
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: authsvc
+  labels:
+    app: tinyci
+spec:
+  replicas: 1
+  selector:
+    matchLabels:
+      app: tinyci
+  template:
+    metadata:
+      labels:
+        app: tinyci
+    spec:
+      terminationGracePeriodSeconds: 10
+      containers:
+      - name: authsvc
+        image: tinyci/release:0.2.3
+        ports:
+        - containerPort: 6004
+        command: [ "github-authsvc", "-c", "/etc/tinyci/config.yaml" ]
+        volumeMounts:
+        - name: config
+          mountPath: "/etc/tinyci"
+          readOnly: true
+      volumes:
+      - name: config
+        secret:
+          secretName: tinyci-config
+---
+apiVersion: v1
+kind: Service
+metadata:
+  name: uisvc
+  labels:
+    app: tinyci
+spec:
+  ports:
+  - port: 6010
+    name: uisvc
+  clusterIP: None
+  selector:
+    app: tinyci
+---
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: uisvc
+  labels:
+    app: tinyci
+spec:
+  replicas: 1
+  selector:
+    matchLabels:
+      app: tinyci
+  template:
+    metadata:
+      labels:
+        app: tinyci
+    spec:
+      terminationGracePeriodSeconds: 10
+      containers:
+      - name: uisvc
+        image: tinyci/release:0.2.3
+        ports:
+        - containerPort: 6010
+        command: [ "uisvc-server", "-c", "/etc/tinyci/config.yaml" ]
+        volumeMounts:
+        - name: config
+          mountPath: "/etc/tinyci"
+          readOnly: true
+      volumes:
+      - name: config
+        secret:
+          secretName: tinyci-config
+---
+apiVersion: v1
+kind: Service
+metadata:
+  name: hooksvc
+  labels:
+    app: tinyci
+spec:
+  ports:
+  - port: 2020
+    name: hooksvc
+  clusterIP: None
+  selector:
+    app: tinyci
+---
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: hooksvc
+  labels:
+    app: tinyci
+spec:
+  replicas: 1
+  selector:
+    matchLabels:
+      app: tinyci
+  template:
+    metadata:
+      labels:
+        app: tinyci
+    spec:
+      terminationGracePeriodSeconds: 10
+      containers:
+      - name: hooksvc
+        image: tinyci/release:0.2.3
+        ports:
+        - containerPort: 2020
+        command: [ "hooksvc", "-c", "/etc/tinyci/hooksvc.yaml" ]
+        volumeMounts:
+        - name: config
+          mountPath: "/etc/tinyci"
+          readOnly: true
+      volumes:
+      - name: config
+        secret:
+          secretName: tinyci-config
+---
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: runner
+  labels:
+    app: tinyci
+spec:
+  replicas: 1
+  selector:
+    matchLabels:
+      app: tinyci
+  template:
+    metadata:
+      labels:
+        app: tinyci
+    spec:
+      terminationGracePeriodSeconds: 10
+      containers:
+      - name: runner
+        image: tinyci/runners:latest
+        command: [ "k8s-runner", "-c", "/etc/tinyci/runner.yaml" ]
+        volumeMounts:
+        - name: config
+          mountPath: "/etc/tinyci"
+          readOnly: true
+      serviceAccountName: k8s-runner
+      volumes:
+      - name: config
+        secret:
+          secretName: tinyci-config
