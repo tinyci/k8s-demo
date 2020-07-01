@@ -28,7 +28,10 @@ metadata:
 rules:
   - apiGroups: ["batch"]
     resources: ["jobs"]
-    verbs: ["put", "get", "watch", "list"]
+    verbs: ["create", "delete", "update", "get", "watch", "list"]
+  - apiGroups: [""]
+    resources: ["events", "pods/log"]
+    verbs: ["list", "get", "watch"]
 ---
 apiVersion: v1
 kind: ServiceAccount
