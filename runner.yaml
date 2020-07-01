@@ -26,11 +26,11 @@ kind: ClusterRole
 metadata:
   name: run-jobs
 rules:
-  - apiGroups: ["batch"]
-    resources: ["jobs"]
+  - apiGroups: ["objects.tinyci.org"]
+    resources: ["cijobs"]
     verbs: ["create", "delete", "update", "get", "watch", "list"]
   - apiGroups: [""]
-    resources: ["events", "pods/log"]
+    resources: ["pods/log"]
     verbs: ["list", "get", "watch"]
 ---
 apiVersion: v1
