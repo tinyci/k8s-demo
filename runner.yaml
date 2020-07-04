@@ -32,6 +32,9 @@ rules:
   - apiGroups: [""]
     resources: ["pods/log"]
     verbs: ["list", "get", "watch"]
+  - apiGroups: [""]
+    resources: ["secrets"]
+    verbs: ["create", "delete"]
 ---
 apiVersion: v1
 kind: ServiceAccount
