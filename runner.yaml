@@ -13,9 +13,13 @@ stringData:
     namespace: "runs"
     max_concurrency: 5
     clients:
-      queuesvc: "tinyci-dev:6001"
-      assetsvc: "tinyci-dev:6002"
-      logsvc: "tinyci-dev:6005"
+      queuesvc: "10.0.0.50:6001"
+      assetsvc: "10.0.0.50:6002"
+      logsvc: "10.0.0.50:6005"
+      tls:
+        ca: /etc/tinyci.crt/ca.crt
+        cert: /etc/tinyci.crt/client.crt
+        key: /etc/tinyci.crt/client.key
 ---
 apiVersion: v1
 kind: Namespace
@@ -81,8 +85,14 @@ spec:
             - name: config
               mountPath: "/etc/tinyci"
               readOnly: true
+            - name: certs
+              mountPath: "/etc/tinyci.crt"
+              readOnly: true
       serviceAccountName: k8s-runner
       volumes:
         - name: config
           secret:
             secretName: tinyci-config
+        - name: certs
+          secret:
+            secretName: tinyci-certs
