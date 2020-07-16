@@ -9,8 +9,9 @@ metadata:
 type: Opaque
 stringData:
   runner.yaml: |-
-    queue: "k8s"
+    queue: "default"
     namespace: "runs"
+    max_concurrency: 5
     clients:
       queuesvc: "tinyci-dev:6001"
       assetsvc: "tinyci-dev:6002"
